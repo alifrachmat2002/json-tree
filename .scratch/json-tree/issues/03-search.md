@@ -1,6 +1,6 @@
 # 03 — Search
 
-Status: ready
+Status: done
 Blocked by: 01
 
 Spec: `../spec.md` (Search)
