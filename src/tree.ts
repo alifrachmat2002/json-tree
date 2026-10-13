@@ -1,0 +1,167 @@
+import type { JsonNode } from './parser'
+
+export const RANGE_SIZE = 100
+const EXPANDED_LEVELS = 2
+const PREVIEW_KEYS = 3
+const PREVIEW_STRING_LENGTH = 60
+
+export type RowKind = 'node' | 'range'
+
+export interface Row {
+  id: string
+  parentId: string | null
+  depth: number
+  kind: RowKind
+  /** Key, Index or range label such as `[0…99]`; null for the root. */
+  label: string | null
+  /** True when the label is an array Index rather than an object Key. */
+  isIndex: boolean
+  node: JsonNode
+  expandable: boolean
+  expanded: boolean
+  /** Number of children (for ranges: items inside the range). */
+  childCount: number
+}
+
+export function childCount(node: JsonNode): number {
+  if (node.type === 'object') return node.entries.length
+  if (node.type === 'array') return node.items.length
+  return 0
+}
+
+export function rangeLabel(start: number, end: number): string {
+  return `[${start}…${end}]`
+}
+
+/** Ids of the containers that start expanded: the first two levels. */
+export function defaultExpanded(root: JsonNode): Set<string> {
+  const expanded = new Set<string>()
+  const visit = (node: JsonNode, id: string, depth: number) => {
+    if (depth >= EXPANDED_LEVELS || childCount(node) === 0) return
+    expanded.add(id)
+    if (node.type === 'object') node.entries.forEach((e, i) => visit(e.value, `${id}/${i}`, depth + 1))
+    if (node.type === 'array') node.items.forEach((item, i) => visit(item, `${id}/${i}`, depth + 1))
+  }
+  visit(root, 'root', 0)
+  return expanded
+}
+
+/** Flatten the Document into the rows currently visible given the expanded set. */
+export function buildRows(root: JsonNode, expanded: Set<string>): Row[] {
+  const rows: Row[] = []
+
+  const pushNode = (
+    node: JsonNode,
+    id: string,
+    parentId: string | null,
+    depth: number,
+    label: string | null,
+    isIndex = false,
+  ) => {
+    const count = childCount(node)
+    const isExpanded = count > 0 && expanded.has(id)
+    rows.push({
+      id,
+      parentId,
+      depth,
+      kind: 'node',
+      label,
+      isIndex,
+      node,
+      expandable: count > 0,
+      expanded: isExpanded,
+      childCount: count,
+    })
+    if (!isExpanded) return
+
+    if (node.type === 'object') {
+      node.entries.forEach((e, i) => pushNode(e.value, `${id}/${i}`, id, depth + 1, e.key))
+    } else if (node.type === 'array') {
+      if (node.items.length <= RANGE_SIZE) {
+        node.items.forEach((item, i) => pushNode(item, `${id}/${i}`, id, depth + 1, String(i), true))
+        return
+      }
+      for (let start = 0; start < node.items.length; start += RANGE_SIZE) {
+        const end = Math.min(start + RANGE_SIZE, node.items.length) - 1
+        const rangeId = `${id}#${start}`
+        const rangeExpanded = expanded.has(rangeId)
+        rows.push({
+          id: rangeId,
+          parentId: id,
+          depth: depth + 1,
+          kind: 'range',
+          label: rangeLabel(start, end),
+          isIndex: false,
+          node,
+          expandable: true,
+          expanded: rangeExpanded,
+          childCount: end - start + 1,
+        })
+        if (!rangeExpanded) continue
+        for (let i = start; i <= end; i++) {
+          pushNode(node.items[i], `${id}/${i}`, rangeId, depth + 2, String(i), true)
+        }
+      }
+    }
+  }
+
+  pushNode(root, 'root', null, 0, null)
+  return rows
+}
+
+/** One-line summary of a Node shown beside its Key. */
+export function preview(node: JsonNode, expanded: boolean): string {
+  switch (node.type) {
+    case 'string': {
+      const text =
+        node.value.length > PREVIEW_STRING_LENGTH
+          ? `${node.value.slice(0, PREVIEW_STRING_LENGTH)}…`
+          : node.value
+      return JSON.stringify(text)
+    }
+    case 'number':
+      return node.source
+    case 'boolean':
+      return String(node.value)
+    case 'null':
+      return 'null'
+    case 'array':
+      return expanded ? '' : `Array(${node.items.length})`
+    case 'object': {
+      if (expanded) return ''
+      if (node.entries.length === 0) return '{}'
+      const keys = node.entries.slice(0, PREVIEW_KEYS).map((e) => e.key)
+      const more = node.entries.length > PREVIEW_KEYS ? ', …' : ''
+      return `{${keys.join(', ')}${more}}`
+    }
+  }
+}
+
+export type NavKey = 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight'
+
+export interface NavResult {
+  select?: string
+  setExpanded?: { id: string; expanded: boolean }
+}
+
+/** Decide what a navigation key does given the visible rows and the selection. */
+export function navigate(rows: Row[], selectedId: string | null, key: NavKey): NavResult {
+  if (rows.length === 0) return {}
+  const index = rows.findIndex((r) => r.id === selectedId)
+  if (index === -1) return { select: rows[0].id }
+  const row = rows[index]
+
+  switch (key) {
+    case 'ArrowUp':
+      return index > 0 ? { select: rows[index - 1].id } : {}
+    case 'ArrowDown':
+      return index < rows.length - 1 ? { select: rows[index + 1].id } : {}
+    case 'ArrowRight':
+      if (!row.expandable) return {}
+      if (!row.expanded) return { setExpanded: { id: row.id, expanded: true } }
+      return rows[index + 1]?.parentId === row.id ? { select: rows[index + 1].id } : {}
+    case 'ArrowLeft':
+      if (row.expandable && row.expanded) return { setExpanded: { id: row.id, expanded: false } }
+      return row.parentId ? { select: row.parentId } : {}
+  }
+}

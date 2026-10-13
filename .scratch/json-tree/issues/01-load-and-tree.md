@@ -1,6 +1,6 @@
 # 01 — Load a Document and render the tree
 
-Status: ready
+Status: done
 
 Spec: `../spec.md` (Constraints, Loading, Tree)
 
