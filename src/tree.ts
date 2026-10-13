@@ -1,4 +1,5 @@
 import type { JsonNode } from './parser'
+import type { Segment } from './path'
 
 export const RANGE_SIZE = 100
 const EXPANDED_LEVELS = 2
@@ -164,4 +165,42 @@ export function navigate(rows: Row[], selectedId: string | null, key: NavKey): N
       if (row.expandable && row.expanded) return { setExpanded: { id: row.id, expanded: false } }
       return row.parentId ? { select: row.parentId } : {}
   }
+}
+
+/** Path of the Node a row stands for. A range row stands for its array. */
+export function segmentsForRow(root: JsonNode, rowId: string): Segment[] {
+  const segments: Segment[] = []
+  const positions = rowId.split('#')[0].split('/').slice(1).map(Number)
+  let node = root
+  for (const position of positions) {
+    if (node.type === 'object') {
+      const entry = node.entries[position]
+      segments.push({ kind: 'key', key: entry.key })
+      node = entry.value
+    } else if (node.type === 'array') {
+      segments.push({ kind: 'index', index: position })
+      node = node.items[position]
+    }
+  }
+  return segments
+}
+
+/** Id of the row at the given child positions, plus the container ids that must be expanded to show it. */
+export function locate(root: JsonNode, positions: number[]): { id: string; expand: string[] } {
+  const expand: string[] = []
+  let id = 'root'
+  let node = root
+  for (const position of positions) {
+    expand.push(id)
+    if (node.type === 'array') {
+      if (node.items.length > RANGE_SIZE) {
+        expand.push(`${id}#${Math.floor(position / RANGE_SIZE) * RANGE_SIZE}`)
+      }
+      node = node.items[position]
+    } else if (node.type === 'object') {
+      node = node.entries[position].value
+    }
+    id = `${id}/${position}`
+  }
+  return { id, expand }
 }
