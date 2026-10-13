@@ -323,3 +323,33 @@ input {
 .menu button:hover {
   background: var(--selected);
 }
+
+.search-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.search {
+  flex: 1;
+  min-width: 0;
+}
+
+.match-count {
+  font-size: 12px;
+  opacity: 0.75;
+  white-space: nowrap;
+}
+
+mark {
+  background: rgba(255, 200, 0, 0.45);
+  color: inherit;
+  border-radius: 2px;
+}
+
+mark.current {
+  background: rgba(255, 140, 0, 0.8);
+  outline: 1px solid rgba(255, 140, 0, 1);
+}

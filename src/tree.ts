@@ -110,16 +110,16 @@ export function buildRows(root: JsonNode, expanded: Set<string>): Row[] {
   return rows
 }
 
+/** A string value cut to the length shown in a row. */
+export function truncateString(value: string): string {
+  return value.length > PREVIEW_STRING_LENGTH ? `${value.slice(0, PREVIEW_STRING_LENGTH)}…` : value
+}
+
 /** One-line summary of a Node shown beside its Key. */
 export function preview(node: JsonNode, expanded: boolean): string {
   switch (node.type) {
-    case 'string': {
-      const text =
-        node.value.length > PREVIEW_STRING_LENGTH
-          ? `${node.value.slice(0, PREVIEW_STRING_LENGTH)}…`
-          : node.value
-      return JSON.stringify(text)
-    }
+    case 'string':
+      return JSON.stringify(truncateString(node.value))
     case 'number':
       return node.source
     case 'boolean':
