@@ -353,3 +353,42 @@ mark.current {
   background: rgba(255, 140, 0, 0.8);
   outline: 1px solid rgba(255, 140, 0, 1);
 }
+
+.unsaved {
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.edit-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.key-prompt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.row.edited {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.removed {
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.inline-edit {
+  font: inherit;
+  min-width: 120px;
+  padding: 0 4px;
+}
+
+.inline-edit.invalid {
+  border-color: var(--danger);
+}

@@ -204,3 +204,42 @@ export function locate(root: JsonNode, positions: number[]): { id: string; expan
   }
   return { id, expand }
 }
+
+/**
+ * Carry the expanded set across a Document change. Row ids are positions, so inserting or
+ * removing array items shifts them; untouched containers are shared between the old and new
+ * Document, so they are followed by identity. Containers that were rebuilt (ancestors of the
+ * change) keep their id.
+ */
+export function remapExpanded(oldRoot: JsonNode, newRoot: JsonNode, expanded: Set<string>): Set<string> {
+  const oldIds = new Map<JsonNode, string>()
+  const collect = (node: JsonNode, id: string) => {
+    if (childCount(node) === 0) return
+    oldIds.set(node, id)
+    if (node.type === 'object') node.entries.forEach((e, i) => collect(e.value, `${id}/${i}`))
+    if (node.type === 'array') node.items.forEach((item, i) => collect(item, `${id}/${i}`))
+  }
+  collect(oldRoot, 'root')
+
+  const moved = new Map<string, string>()
+  const present = new Set<string>()
+  const follow = (node: JsonNode, id: string) => {
+    if (childCount(node) === 0) return
+    present.add(id)
+    const was = oldIds.get(node)
+    if (was !== undefined) moved.set(was, id)
+    if (node.type === 'object') node.entries.forEach((e, i) => follow(e.value, `${id}/${i}`))
+    if (node.type === 'array') node.items.forEach((item, i) => follow(item, `${id}/${i}`))
+  }
+  follow(newRoot, 'root')
+  const claimed = new Set(moved.values())
+
+  const next = new Set<string>()
+  for (const entry of expanded) {
+    const [base, range] = entry.split('#')
+    const suffix = range === undefined ? '' : `#${range}`
+    const target = moved.get(base) ?? (present.has(base) && !claimed.has(base) ? base : undefined)
+    if (target !== undefined) next.add(target + suffix)
+  }
+  return next
+}

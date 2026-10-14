@@ -1,5 +1,23 @@
 import { Fragment, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { copyToClipboard } from './clipboard'
+import {
+  NODE_TYPES,
+  addNode,
+  addTarget,
+  childTarget,
+  convertType,
+  deleteAt,
+  editPrimitive,
+  editableText,
+  getAt,
+  isEditable,
+  positionsForRow,
+  renameKey,
+  replaceAt,
+  type AddTarget,
+  type Diff,
+  type NodeType,
+} from './edit'
 import type { JsonNode } from './parser'
 import { PathBar } from './PathBar'
 import { DEFAULT_ROOT_NAME, describeFailure, formatPath, parsePath, resolvePath } from './path'
@@ -8,10 +26,12 @@ import { findMatches, splitHighlight, type Match } from './search'
 import { copyText } from './serialize'
 import {
   buildRows,
+  childCount,
   defaultExpanded,
   locate,
   navigate,
   preview,
+  remapExpanded,
   truncateString,
   segmentsForRow,
   type NavKey,
@@ -22,17 +42,49 @@ const NAV_KEYS: NavKey[] = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']
 /** Beyond this many matches only the current one is revealed, to keep the tree small. */
 const AUTO_EXPAND_LIMIT = 500
 
-export function TreeView({ root }: { root: JsonNode }) {
+interface TreeViewProps {
+  root: JsonNode
+  diff: Diff
+  canUndo: boolean
+  canRedo: boolean
+  onChange: (root: JsonNode) => void
+  onUndo: () => void
+  onRedo: () => void
+}
+
+interface InlineEdit {
+  rowId: string
+  field: 'key' | 'value'
+  error: string | null
+}
+
+interface PendingAdd {
+  target: AddTarget
+  error: string | null
+}
+
+export function TreeView({ root, diff, canUndo, canRedo, onChange, onUndo, onRedo }: TreeViewProps) {
   const [expanded, setExpanded] = useState(() => defaultExpanded(root))
   const [selectedId, setSelectedId] = useState<string | null>('root')
   const [menu, setMenu] = useState<{ rowId: string; x: number; y: number } | null>(null)
   const [status, setStatus] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [current, setCurrent] = useState(0)
+  const [editing, setEditing] = useState<InlineEdit | null>(null)
+  const [pendingAdd, setPendingAdd] = useState<PendingAdd | null>(null)
   const treeRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const settings = usePathSettings()
   const rootName = settings.rootName.trim() || DEFAULT_ROOT_NAME
+
+  // When the Document changes, move expansion with the Nodes (ids are positions) and reveal any new Node.
+  const [seenRoot, setSeenRoot] = useState(root)
+  const [revealIds, setRevealIds] = useState<string[]>([])
+  if (seenRoot !== root) {
+    setSeenRoot(root)
+    setExpanded(new Set([...remapExpanded(seenRoot, root, expanded), ...revealIds]))
+    setRevealIds([])
+  }
 
   const rows = useMemo(() => buildRows(root, expanded), [root, expanded])
 
@@ -140,9 +192,132 @@ export function TreeView({ root }: { root: JsonNode }) {
     return null
   }
 
-  const selectedBase = selectedId ? selectedId.split('#')[0] : 'root'
+  // Undo/redo can leave the selection pointing at a Node that no longer exists.
+  const selectedExists = selectedId !== null && getAt(root, positionsForRow(selectedId)) !== undefined
+  const selectedBase = selectedExists ? selectedId.split('#')[0] : 'root'
+  const selectedPositions = positionsForRow(selectedBase)
+  const selectedNode = getAt(root, selectedPositions)!
+  const canEdit = !(selectedExists && selectedId.includes('#'))
+  const parentOfSelected =
+    selectedPositions.length > 0 ? getAt(root, selectedPositions.slice(0, -1)) : undefined
+  const canRename = canEdit && parentOfSelected?.type === 'object'
+  const canDelete = canEdit && selectedPositions.length > 0
+  const canAdd = canEdit && addTarget(root, selectedPositions) !== null
+  const canAddChild = canEdit && childTarget(root, selectedPositions) !== null
+
+  // A pending Key prompt targets a container by position, so it dies with any selection or Document change.
+  useEffect(() => setPendingAdd(null), [root, selectedId])
+
+  const focusTree = () => treeRef.current?.focus()
+  const select = (positions: number[]) => setSelectedId(['root', ...positions].join('/'))
+
+  const startEdit = (field: 'key' | 'value') => {
+    if (!canEdit) return
+    if (field === 'value' && !isEditable(selectedNode)) return
+    if (field === 'key' && !canRename) return
+    setPendingAdd(null)
+    setEditing({ rowId: selectedBase, field, error: null })
+  }
+
+  /** Apply an inline edit; `refocus` is false on blur so a click elsewhere keeps its focus. */
+  const commitEdit = (text: string, refocus = true) => {
+    if (!editing) return
+    const positions = positionsForRow(editing.rowId)
+    const node = getAt(root, positions)
+    if (!node) return setEditing(null)
+    if (editing.field === 'value') {
+      const result = editPrimitive(node, text)
+      if (!result.ok) return setEditing({ ...editing, error: result.message })
+      onChange(replaceAt(root, positions, result.node))
+    } else {
+      const result = renameKey(root, positions, text)
+      if (!result.ok) return setEditing({ ...editing, error: result.message })
+      onChange(result.root)
+    }
+    setEditing(null)
+    if (refocus) focusTree()
+  }
+
+  const cancelEdit = () => {
+    setEditing(null)
+    focusTree()
+  }
+
+  const changeType = (type: NodeType) => {
+    if (!canEdit || type === selectedNode.type) return
+    onChange(replaceAt(root, selectedPositions, convertType(selectedNode, type)))
+    focusTree()
+  }
+
+  const placeAdded = (next: JsonNode, positions: number[]) => {
+    onChange(next)
+    setRevealIds(locate(next, positions).expand)
+    select(positions)
+    focusTree()
+  }
+
+  const beginAdd = (target: AddTarget | null) => {
+    if (!target) return
+    setEditing(null)
+    if (target.needsKey) {
+      setPendingAdd({ target, error: null })
+      return
+    }
+    const result = addNode(root, target, null)
+    if (result.ok) placeAdded(result.root, result.positions)
+  }
+
+  const commitAdd = (key: string) => {
+    if (!pendingAdd) return
+    const result = addNode(root, pendingAdd.target, key)
+    if (!result.ok) return setPendingAdd({ ...pendingAdd, error: result.message })
+    setPendingAdd(null)
+    placeAdded(result.root, result.positions)
+  }
+
+  const removeSelected = () => {
+    if (!canDelete) return
+    const next = deleteAt(root, selectedPositions)
+    const parentPositions = selectedPositions.slice(0, -1)
+    const siblings = childCount(getAt(next, parentPositions)!)
+    const index = selectedPositions[selectedPositions.length - 1]
+    // Select the Node that slid into the gap, else the previous sibling, else the parent.
+    if (index < siblings) select([...parentPositions, index])
+    else if (siblings > 0) select([...parentPositions, siblings - 1])
+    else select(parentPositions)
+    setEditing(null)
+    onChange(next)
+    focusTree()
+  }
 
   const onKeyDown = (e: React.KeyboardEvent) => {
+    const mod = e.ctrlKey || e.metaKey
+    if (mod && !e.altKey && e.code === 'KeyZ') {
+      e.preventDefault()
+      if (e.shiftKey) onRedo()
+      else onUndo()
+      return
+    }
+    if (mod && !e.altKey && !e.shiftKey && e.code === 'KeyY') {
+      e.preventDefault()
+      onRedo()
+      return
+    }
+    if (!mod && !e.altKey && e.key === 'Enter') {
+      e.preventDefault()
+      startEdit(isEditable(selectedNode) ? 'value' : 'key')
+      return
+    }
+    if (!mod && !e.altKey && e.key === 'F2') {
+      e.preventDefault()
+      startEdit('key')
+      return
+    }
+    if (!mod && !e.altKey && e.key === 'Delete') {
+      e.preventDefault()
+      removeSelected()
+      return
+    }
     if (e.ctrlKey && e.shiftKey && e.code === 'KeyC') {
       e.preventDefault()
       void copyPath(selectedBase)
@@ -150,7 +325,7 @@ export function TreeView({ root }: { root: JsonNode }) {
     }
     if (!NAV_KEYS.includes(e.key as NavKey)) return
     e.preventDefault()
-    const result = navigate(rows, selectedId, e.key as NavKey)
+    const result = navigate(rows, selectedExists ? selectedId : 'root', e.key as NavKey)
     if (result.select) setSelectedId(result.select)
     if (result.setExpanded) setRowExpanded(result.setExpanded.id, result.setExpanded.expanded)
   }
@@ -213,6 +388,93 @@ export function TreeView({ root }: { root: JsonNode }) {
           </span>
         )}
       </div>
+      <div className="edit-bar">
+        <button
+          disabled={!canUndo}
+          title="Undo (Ctrl+Z)"
+          onClick={() => {
+            onUndo()
+            focusTree()
+          }}
+        >
+          Undo
+        </button>
+        <button
+          disabled={!canRedo}
+          title="Redo (Ctrl+Y)"
+          onClick={() => {
+            onRedo()
+            focusTree()
+          }}
+        >
+          Redo
+        </button>
+        <select
+          aria-label="Type"
+          value={selectedNode.type}
+          disabled={!canEdit}
+          onChange={(e) => changeType(e.target.value as NodeType)}
+        >
+          {NODE_TYPES.map((t) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </select>
+        <button
+          disabled={!canEdit || !isEditable(selectedNode)}
+          title="Edit value (Enter)"
+          onClick={() => startEdit('value')}
+        >
+          Edit
+        </button>
+        <button disabled={!canRename} title="Rename Key (F2)" onClick={() => startEdit('key')}>
+          Rename
+        </button>
+        <button disabled={!canAdd} onClick={() => beginAdd(addTarget(root, selectedPositions))}>
+          Add
+        </button>
+        <button disabled={!canAddChild} onClick={() => beginAdd(childTarget(root, selectedPositions))}>
+          Add child
+        </button>
+        <button disabled={!canDelete} title="Delete (Del)" onClick={removeSelected}>
+          Delete
+        </button>
+        {pendingAdd && (
+          <form
+            className="key-prompt"
+            onSubmit={(e) => {
+              e.preventDefault()
+              commitAdd(new FormData(e.currentTarget).get('key') as string)
+            }}
+          >
+            <input
+              name="key"
+              aria-label="New Key"
+              placeholder="New Key"
+              autoFocus
+              spellCheck={false}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setPendingAdd(null)
+                  focusTree()
+                }
+              }}
+            />
+            <button type="submit">Add</button>
+            <button
+              type="button"
+              onClick={() => {
+                setPendingAdd(null)
+                focusTree()
+              }}
+            >
+              Cancel
+            </button>
+            {pendingAdd.error && <span className="jump-error">{pendingAdd.error}</span>}
+          </form>
+        )}
+      </div>
       <div ref={treeRef} className="tree" role="tree" tabIndex={0} onKeyDown={onKeyDown}>
         {rows.map((row) => (
           <TreeRow
@@ -221,6 +483,11 @@ export function TreeView({ root }: { root: JsonNode }) {
             selected={row.id === selectedId}
             query={searchQuery}
             currentPart={row.id === currentId ? currentMatch.part : null}
+            edited={diff.edited.has(row.id)}
+            removed={diff.removed.get(row.id) ?? 0}
+            edit={editing?.rowId === row.id ? editing : null}
+            onCommit={commitEdit}
+            onCancel={cancelEdit}
             onSelect={() => setSelectedId(row.id)}
             onToggle={() => setRowExpanded(row.id, !row.expanded)}
             onMenu={(x, y) => {
@@ -298,6 +565,11 @@ function TreeRow({
   selected,
   query,
   currentPart,
+  edited,
+  removed,
+  edit,
+  onCommit,
+  onCancel,
   onSelect,
   onToggle,
   onMenu,
@@ -306,6 +578,11 @@ function TreeRow({
   selected: boolean
   query: string
   currentPart: 'key' | 'value' | null
+  edited: boolean
+  removed: number
+  edit: InlineEdit | null
+  onCommit: (text: string, refocus?: boolean) => void
+  onCancel: () => void
   onSelect: () => void
   onToggle: () => void
   onMenu: (x: number, y: number) => void
@@ -317,7 +594,7 @@ function TreeRow({
 
   return (
     <div
-      className={`row${selected ? ' selected' : ''}`}
+      className={`row${selected ? ' selected' : ''}${edited ? ' edited' : ''}`}
       role="treeitem"
       aria-selected={selected}
       aria-expanded={row.expandable ? row.expanded : undefined}
@@ -343,6 +620,8 @@ function TreeRow({
         <span className={`label${row.isIndex || isRange ? ' index' : ''}`}>
           {row.isIndex || isRange ? (
             row.isIndex ? `[${row.label}]` : row.label
+          ) : edit?.field === 'key' ? (
+            <InlineInput initial={row.label} error={edit.error} onCommit={onCommit} onCancel={onCancel} />
           ) : (
             <>
               <Highlighted text={row.label} query={query} current={currentPart === 'key'} />:
@@ -356,7 +635,16 @@ function TreeRow({
           {row.childCount} {unit}
         </span>
       )}
-      {!isRange && <span className={`value ${type}`}>
+      {removed > 0 && (
+        <span className="removed">
+          {removed} {removed === 1 ? 'child' : 'children'} removed
+        </span>
+      )}
+      {!isRange && edit?.field === 'value' && (
+        <InlineInput initial={editableText(node)} error={edit.error} onCommit={onCommit} onCancel={onCancel} />
+      )}
+      {!isRange && edit?.field !== 'value' && (
+        <span className={`value ${type}`}>
           {node.type === 'string' ? (
             <QuotedString value={node.value} query={query} current={currentPart === 'value'} />
           ) : (
@@ -366,7 +654,8 @@ function TreeRow({
               current={currentPart === 'value'}
             />
           )}
-        </span>}
+        </span>
+      )}
       {!isRange && (
         <button
           className="row-menu"
@@ -381,6 +670,59 @@ function TreeRow({
         </button>
       )}
     </div>
+  )
+}
+
+function InlineInput({
+  initial,
+  error,
+  onCommit,
+  onCancel,
+}: {
+  initial: string
+  error: string | null
+  onCommit: (text: string, refocus?: boolean) => void
+  onCancel: () => void
+}) {
+  const [text, setText] = useState(initial)
+  // Enter/Escape finish the edit themselves; the blur that follows unmounting must not repeat it.
+  const finished = useRef(false)
+  // A rejected Enter leaves the editor open, so it can finish again.
+  useEffect(() => {
+    finished.current = false
+  }, [error])
+  return (
+    <>
+      <input
+        className={`inline-edit${error ? ' invalid' : ''}`}
+        value={text}
+        autoFocus
+        spellCheck={false}
+        aria-label="Edit"
+        aria-invalid={error !== null}
+        onFocus={(e) => e.currentTarget.select()}
+        onChange={(e) => setText(e.target.value)}
+        onClick={(e) => e.stopPropagation()}
+        // Blur commits valid text; invalid text stays open with its error showing.
+        onBlur={() => {
+          if (!finished.current) onCommit(text, false)
+        }}
+        onKeyDown={(e) => {
+          // Keep tree shortcuts (Delete, Ctrl+Z, arrows…) from firing while typing.
+          e.stopPropagation()
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            finished.current = true
+            onCommit(text)
+          } else if (e.key === 'Escape') {
+            e.preventDefault()
+            finished.current = true
+            onCancel()
+          }
+        }}
+      />
+      {error && <span className="jump-error">{error}</span>}
+    </>
   )
 }
 
