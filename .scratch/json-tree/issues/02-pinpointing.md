@@ -1,6 +1,6 @@
 # 02 — Path bar, Path Formats, copy and jump to Path
 
-Status: ready
+Status: done
 Blocked by: 01
 
 Spec: `../spec.md` (Pinpointing)
