@@ -1,6 +1,6 @@
 # 04 — Editing, Edited Node markers, undo/redo
 
-Status: ready
+Status: done
 Blocked by: 01
 
 Spec: `../spec.md` (Editing)
