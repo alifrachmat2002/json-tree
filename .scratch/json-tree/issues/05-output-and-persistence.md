@@ -1,6 +1,6 @@
 # 05 — Export and persistence
 
-Status: ready
+Status: done
 Blocked by: 01, 04
 
 Spec: `../spec.md` (Output and persistence)

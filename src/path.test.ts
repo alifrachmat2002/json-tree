@@ -161,7 +161,7 @@ describe('resolvePath', () => {
     const result = run('data.users[1]["first-name"]')
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(result.node).toEqual({ type: 'string', value: 'b' })
+    expect(result.node).toMatchObject({ type: 'string', value: 'b' })
     expect(result.positions).toEqual([0, 1, 0])
     expect(result.segments).toEqual([key('users'), idx(1), key('first-name')])
   })

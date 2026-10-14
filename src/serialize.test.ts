@@ -41,3 +41,21 @@ describe('copyText', () => {
     expect(copyText(node('{"a":[1]}'))).toBe('{\n  "a": [\n    1\n  ]\n}')
   })
 })
+
+describe('round trip', () => {
+  it('keeps the source escapes of untouched strings and Keys', () => {
+    const bs = String.fromCharCode(92)
+    const text = `{\n  "k${bs}u00e9": "a${bs}/b ${bs}u00e9 é"\n}`
+    expect(serialize(node(text))).toBe(text)
+  })
+
+  it('re-escapes an edited string canonically', () => {
+    const edited = { type: 'string' as const, value: 'a/b' }
+    expect(serialize(edited)).toBe('"a/b"')
+  })
+
+  it('is byte-identical for a 2-space-indented Document', () => {
+    const text = '{\n  "a": [\n    1.0,\n    -0.50,\n    1E+2,\n    "x\\ny"\n  ],\n  "b": {},\n  "c": [],\n  "d": {\n    "e": null,\n    "f": true\n  }\n}'
+    expect(serialize(node(text))).toBe(text)
+  })
+})

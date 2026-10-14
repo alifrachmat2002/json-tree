@@ -5,4 +5,5 @@ We parse Documents with our own JSON parser instead of `JSON.parse`. It keeps ea
 ## Consequences
 
 - Nodes cannot be plain JS values. A number Node carries its source text, and editing that Node is the only thing that replaces the text.
+- String values and Keys likewise carry their source text (including escapes such as `\/` or `é`); an edited or renamed one is re-encoded canonically.
 - Export goes through our own serialiser, not `JSON.stringify`.

@@ -1,11 +1,41 @@
 import { describe, expect, it } from 'vitest'
-import { parse } from './parser'
+import { parse, type JsonNode } from './parser'
+
+/** Drop string/Key source text so shape assertions stay about values. */
+function withoutSources(node: JsonNode): JsonNode {
+  switch (node.type) {
+    case 'string':
+      return { type: 'string', value: node.value }
+    case 'array':
+      return { type: 'array', items: node.items.map(withoutSources) }
+    case 'object':
+      return {
+        type: 'object',
+        entries: node.entries.map((e) => ({ key: e.key, value: withoutSources(e.value) })),
+      }
+    default:
+      return node
+  }
+}
 
 function ok(text: string) {
+  return withoutSources(parsed(text))
+}
+
+function parsed(text: string) {
   const r = parse(text)
   if (!r.ok) throw new Error(`expected success, got ${r.error.message}`)
   return r.node
 }
+
+describe('string source text', () => {
+  it('keeps the raw text of strings and Keys', () => {
+    const node = parsed(String.raw`{"k\u0041": "a\/b"}`)
+    if (node.type !== 'object') throw new Error('expected object')
+    expect(node.entries[0].keySource).toBe(String.raw`"k\u0041"`)
+    expect(node.entries[0].value).toMatchObject({ source: String.raw`"a\/b"` })
+  })
+})
 
 describe('parse', () => {
   it('parses every primitive type', () => {

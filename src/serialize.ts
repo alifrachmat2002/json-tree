@@ -1,10 +1,10 @@
 import type { JsonNode } from './parser'
 
-/** Pretty-print a Node with 2-space indent, keeping Key order and number source text. */
+/** Pretty-print a Node with 2-space indent, keeping Key order and the source text of untouched numbers, strings and Keys. */
 export function serialize(node: JsonNode, indent = ''): string {
   switch (node.type) {
     case 'string':
-      return JSON.stringify(node.value)
+      return node.source ?? JSON.stringify(node.value)
     case 'number':
       return node.source
     case 'boolean':
@@ -21,7 +21,7 @@ export function serialize(node: JsonNode, indent = ''): string {
       if (node.entries.length === 0) return '{}'
       const inner = `${indent}  `
       const entries = node.entries.map(
-        (e) => `${inner}${JSON.stringify(e.key)}: ${serialize(e.value, inner)}`,
+        (e) => `${inner}${e.keySource ?? JSON.stringify(e.key)}: ${serialize(e.value, inner)}`,
       )
       return `{\n${entries.join(',\n')}\n${indent}}`
     }

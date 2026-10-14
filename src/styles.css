@@ -392,3 +392,8 @@ mark.current {
 .inline-edit.invalid {
   border-color: var(--danger);
 }
+
+.notice {
+  font-size: 12px;
+  opacity: 0.8;
+}

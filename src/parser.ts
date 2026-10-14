@@ -1,7 +1,7 @@
 export type JsonNode =
-  | { type: 'object'; entries: { key: string; value: JsonNode }[] }
+  | { type: 'object'; entries: { key: string; keySource?: string; value: JsonNode }[] }
   | { type: 'array'; items: JsonNode[] }
-  | { type: 'string'; value: string }
+  | { type: 'string'; value: string; source?: string }
   | { type: 'number'; source: string }
   | { type: 'boolean'; value: boolean }
   | { type: 'null' }
@@ -64,7 +64,11 @@ class Parser {
   private parseValue(): JsonNode {
     const ch = this.text[this.pos]
     if (ch === undefined) this.fail('Unexpected end of input')
-    if (ch === '"') return { type: 'string', value: this.parseString() }
+    if (ch === '"') {
+      const start = this.pos
+      const value = this.parseString()
+      return { type: 'string', value, source: this.text.slice(start, this.pos) }
+    }
     if (ch === '{' || ch === '[') {
       if (++this.depth > MAX_DEPTH) this.fail('Document is nested too deeply')
       const node = ch === '{' ? this.parseObject() : this.parseArray()
@@ -77,7 +81,7 @@ class Parser {
 
   private parseObject(): JsonNode {
     this.pos++ // {
-    const entries: { key: string; value: JsonNode }[] = []
+    const entries: { key: string; keySource?: string; value: JsonNode }[] = []
     const seen = new Set<string>()
     this.skipWhitespace()
     if (this.text[this.pos] === '}') {
@@ -89,13 +93,14 @@ class Parser {
       if (this.text[this.pos] !== '"') this.fail('Expected a string Key')
       const keyOffset = this.pos
       const key = this.parseString()
+      const keySource = this.text.slice(keyOffset, this.pos)
       if (seen.has(key)) this.fail(`Duplicate Key ${JSON.stringify(key)}`, keyOffset)
       seen.add(key)
       this.skipWhitespace()
       if (this.text[this.pos] !== ':') this.fail("Expected ':' after Key")
       this.pos++
       this.skipWhitespace()
-      entries.push({ key, value: this.parseValue() })
+      entries.push({ key, keySource, value: this.parseValue() })
       this.skipWhitespace()
       const ch = this.text[this.pos]
       this.pos++
